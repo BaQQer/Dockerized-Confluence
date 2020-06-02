@@ -1,0 +1,89 @@
+version: "3.3"
+
+services:
+  traefik:
+    image: traefik:v2.0
+    restart: always
+    container_name: traefik
+    ports:
+      - "80:80"
+#      - "8080:8080" # <== :8080 is where the dashboard runs on
+      - "443:443"
+    command:
+      ## API Settings
+      - --api.insecure=false
+      - --api.dashboard=false
+      - --api.debug=false
+      ## Log Settings (options: ERROR, DEBUG, PANIC, FATAL, WARN, INFO)
+      - --log.level=DEBUG
+      ## Provider Settings
+      - --providers.docker=true # <== Enabling docker as the provider for traefik
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.filename=/dynamic.yaml
+      - --providers.docker.network=frontend
+      ## Entrypoints Settings
+      - --entrypoints.http.address=:80
+      - --entrypoints.https.address=:443
+      ## Certificate Settings (Let's Encrypt)
+      - --certificatesresolvers.confluence-resolver.acme.tlschallenge=true
+      - --certificatesresolvers.confluence-resolver.acme.email=${LEMAIL}
+      - --certificatesresolvers.confluence-resolver.acme.storage=/letsencrypt/acme.json
+
+    volumes:
+      - ./traefik/letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/dynamic.yaml:/dynamic.yaml
+    networks:
+      - frontend
+
+  confluence_db:
+    container_name: confluence_db
+    image: postgres:latest
+    restart: always
+    volumes:
+      - ./confluence_db/data:/var/lib/postgresql/data
+    networks:
+      - backend
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+  confluence_app:
+    container_name: confluence_app
+    image: atlassian/confluence-server:latest
+    restart: always
+    depends_on:
+      - confluence_db
+    volumes:
+      - ./confluence_app:/var/atlassian/application-data/confluence
+    environment:
+      ATL_JDBC_URL: jdbc:postgresql://confluence_db/confluence_db
+      ATL_JDBC_USER: ${POSTGRES_USER}
+      ATL_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
+      ATL_DB_TYPE: postgresql
+      CATALINA_CONNECTOR_PROXYNAME: Â${DOMAIN}
+      CATALINA_CONNECTOR_PROXYPORT: 443
+      CATALINA_CONNECTOR_SCHEME: https
+      SET_PERMISSIONS: "true"
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+    networks:
+      - frontend
+      - backend
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.confluence-http.entrypoints=http
+      - traefik.http.routers.confluence-http.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.confluence-http.middlewares=redirect@file
+      - traefik.http.routers.confluence-https.entrypoints=https
+      - traefik.http.routers.confluence-https.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.confluence-https.tls.certresolver=confluence-resolver
+      - traefik.http.services.confluence.loadbalancer.server.port=8090
+      - traefik.docker.network=frontend
+
+networks:
+  frontend:
+  backend:
